@@ -13,36 +13,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-r"""Vizier for linear VRNN for SGDSynthDataset.
+r"""Vizier for linear VRNN for MultiWoZSynthDataset.
 
 """
 
 import sgd_synth_tmpl as tmpl  # local file import from experimental.language_structure.vrnn.experiments.linear_vrnn
 
-_DATASET = 'sgd_synth'
-
 
 def get_config():
   """Returns the configuration for this experiment."""
-  config = tmpl.get_config()
+  config = tmpl.get_config(
+      shared_bert_embedding=True, bert_embedding_type='base')
 
   config.max_task_failures = -1
   config.max_per_task_failures = 10
   config.patience = -1
 
+  config.train_epochs = 5
+  config.train_batch_size = 2
+  config.eval_batch_size = 2
+
   return config
 
 
-def get_sweep(hyper):
-  """Returns hyperparameter sweep."""
-  domain = [
-      hyper.sweep('config.word_weights_file_weight',
-                  hyper.discrete([0.25 * i for i in range(5)])),
-      hyper.sweep('config.psl_constraint_learning_weight',
-                  hyper.discrete([0.])),
-      hyper.sweep('config.model.vae_cell.encoder_hidden_size',
-                  hyper.discrete([200, 300, 400])),
-      hyper.sweep('config.base_learning_rate', hyper.discrete([5e-4, 1e-3]))
-  ]
-  sweep = hyper.product(domain)
-  return sweep
+# def get_sweep(hyper):
+#   """Returns hyperparameter sweep."""
+#   domain = [
+#       hyper.sweep('config.word_weights_file_weight',
+#                   hyper.discrete([0.25 * i for i in range(5)])),
+#       hyper.sweep('config.psl_constraint_learning_weight',
+#                   hyper.discrete([0.])),
+#       hyper.sweep('config.model.vae_cell.encoder_hidden_size',
+#                   hyper.discrete([200, 300, 400])),
+#       hyper.sweep('config.base_learning_rate',
+#                   hyper.discrete([3e-5, 5e-5, 1e-4, 3e-4]))
+#   ]
+#   sweep = hyper.product(domain)
+#   return sweep
