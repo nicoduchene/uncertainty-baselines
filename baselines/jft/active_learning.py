@@ -34,12 +34,12 @@ Use `gs://ub-checkpoints/ImageNet21k_BE-L32/baselines-jft-0209_205214/1/checkpoi
 # pylint: enable=line-too-long
 
 from functools import partial  # pylint: disable=g-importing-member standard use
-import logging
 import math
 import multiprocessing
 
 from absl import app
 from absl import flags
+from absl import logging
 from clu import metric_writers
 from clu import parameter_overview
 from clu import periodic_actions
@@ -121,10 +121,13 @@ def get_ids_logits_masks(*,
         raise ValueError(f'Loss name: {loss_name} not supported.')
 
     if use_pre_logits:
-      # pre_logits [batch_size, hidden_size, ens_size]
-      pre_logits = jnp.transpose(
-          jnp.asarray(jnp.split(out['pre_logits'], ens_size)), axes=[1, 2, 0])
-      output = pre_logits
+      if config and config.model_type == 'batchensemble':
+        # pre_logits [batch_size, hidden_size, ens_size]
+        pre_logits = jnp.transpose(
+            jnp.asarray(jnp.split(out['pre_logits'], ens_size)), axes=[1, 2, 0])
+        output = pre_logits
+      else:
+        output = out['pre_logits']
     else:
       output = logits
 
@@ -320,7 +323,7 @@ def get_density_scores(*,
   train_masks_bool = train_masks.astype(bool)
   train_pre_logits = train_pre_logits[train_masks_bool].reshape(
       -1, train_pre_logits.shape[-1])
-  train_labels = np.argmax(train_labels[train_masks_bool], axis=-1).ravel()
+  train_labels = jnp.argmax(train_labels[train_masks_bool], axis=-1).ravel()
 
   mean_list, cov = ood_utils.compute_mean_and_cov(train_pre_logits,
                                                   train_labels)
@@ -366,8 +369,8 @@ def select_acquisition_batch_indices(*, acquisition_batch_size, scores, ids,
   logging.info(msg=f'Score statistics pool set - '
                f'min: {f_ent.min()}, mean: {f_ent.mean()}, max: {f_ent.max()}')
 
-  partitioned_scorers = np.argpartition(-scores, acquisition_batch_size)
-  top_scorers = partitioned_scorers[:acquisition_batch_size]
+  sorted_scorers = np.array(jnp.argsort(-scores, kind='stable'))
+  top_scorers = sorted_scorers[:acquisition_batch_size]
 
   top_ids = ids[top_scorers].tolist()
   top_scores = scores[top_scorers].tolist()
@@ -501,7 +504,8 @@ def finetune(*,
                                        train_batch['labels'], rngs_loop)
     if jax.process_index() == 0 and profiler is not None:
       profiler(current_step)
-    if current_step % 5 == 0:
+    if train_utils.itstime(
+        current_step, every_n_steps=5, total_steps=total_steps):
       train_accuracy = get_accuracy(
           evaluation_fn=evaluation_fn, opt_repl=opt_repl, ds=train_eval_ds)
       val_accuracy = get_accuracy(
