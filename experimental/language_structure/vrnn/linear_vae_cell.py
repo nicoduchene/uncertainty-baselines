@@ -96,6 +96,28 @@ class _Embedding(tf.keras.layers.Embedding):
     return outputs
 
 
+def _build_embedding_layer(
+    embedding_type: str,
+    config: model_config.VanillaLinearVAECellConfig,
+    embeddings_initializer: Optional[Any] = None) -> tf.keras.layers.Layer:
+  """Creates embedding layer of the specific `embedding_type`."""
+  if embedding_type == model_config.GLOVE_EMBED:
+    return _Embedding(
+        INPUT_ID_NAME,
+        config.vocab_size,
+        config.embed_size,
+        embeddings_initializer=embeddings_initializer,
+        input_length=config.max_seq_length,
+        trainable=config.trainable_embedding)
+  elif embedding_type == model_config.BERT_EMBED:
+    return _BERT(
+        config.max_seq_length,
+        bert_config=configs.BertConfig(**config.shared_bert_embedding_config),
+        trainable=config.trainable_embedding)
+  raise ValueError('Invalid embedding type {}, expected {} or {}'.format(
+      embedding_type, model_config.GLOVE_EMBED, model_config.BERT_EMBED))
+
+
 class _DualRNN(tf.keras.Model):
   """Dual RNN base class.
 
@@ -109,56 +131,37 @@ class _DualRNN(tf.keras.Model):
 
   def __init__(self,
                vocab_size: int,
-               embed_size: int,
-               max_seq_length: int,
                hidden_size: int,
+               embedding_layer: Any,
                num_layers: int = 1,
                dropout: float = 0.5,
                cell_type: Optional[str] = 'lstm',
                return_state: Optional[bool] = False,
-               embeddings_initializer: Optional[Any] = None,
-               shared_embedding_layer: Optional[Any] = None,
-               trainable_embedding: Optional[bool] = True,
                **kwargs: Dict[str, Any]):
     """Dual RNN base class constructor.
 
     Args:
       vocab_size: input vocabulary size.
-      embed_size: embedding hidden size.
-      max_seq_length: the maximum sequence length for the input of an example.
       hidden_size: the hidden layer size of the RNN.
+      embedding_layer: an embedding layer to be used.
       num_layers: number of layers of the RNN.
       dropout: dropout rate.
       cell_type: the RNN cell type.
       return_state: whether to include the final state in the outputs.
-      embeddings_initializer: Initializer for the embeddings matrix.
-      shared_embedding_layer: an embedding layer to be used if provided, instead
-        of creating a new one.
-      trainable_embedding: Whether the embedding layer is trainable.
       **kwargs: optional arguments from childern class to be passed to
         _run_dual_rnn
     """
     super(_DualRNN, self).__init__()
     self._vocab_size = vocab_size
-    self._embed_size = embed_size
-    self._max_seq_length = max_seq_length
     self._hidden_size = hidden_size
     self._num_layers = num_layers
     self._dropout = dropout
     self._cell_type = cell_type
     self._return_state = return_state
-    self._shared_embedding_layer = shared_embedding_layer
-    self._embeddings_initializer = embeddings_initializer
-    self._trainable_embedding = trainable_embedding
+
+    self.embedding_layer = embedding_layer
 
   def build(self, input_shape):
-    if self._shared_embedding_layer:
-      self.embedding_layer = self._shared_embedding_layer
-    else:
-      self.embedding_layer = self._embedding_layer(self._vocab_size,
-                                                   self._embed_size,
-                                                   self._max_seq_length,
-                                                   self._embeddings_initializer)
     self.dropout = tf.keras.layers.Dropout(self._dropout)
 
   def call(self, input_1, input_2, initial_state, **kwargs):
@@ -181,16 +184,6 @@ class _DualRNN(tf.keras.Model):
   def _run_dual_rnn(self, input_1, input_2, input_mask_1, input_mask_2,
                     initial_state, **kwargs):
     raise NotImplementedError('Must implement method _run_dual_rnn.')
-
-  def _embedding_layer(self, vocab_size: int, embed_size: int,
-                       max_seq_length: int, embeddings_initializer: Any):
-    return _Embedding(
-        INPUT_ID_NAME,
-        vocab_size,
-        embed_size,
-        trainable=self._trainable_embedding,
-        embeddings_initializer=embeddings_initializer,
-        input_length=max_seq_length)
 
   def _split_hidden_state_and_cell_state(self, state: Sequence[Any]):
     """Split the state into the hidden state (`h`) and optionally the cell state (`c`).
@@ -340,18 +333,21 @@ class _VAECell(tf.keras.layers.Layer):
     self.state_updater = state_updater
 
   def _verify_and_prepare_inputs(self, inputs: Sequence[Any]):
-    if len(inputs) not in (3, 5):
+    if len(inputs) not in (5, 7):
       raise ValueError(
-          'Inputs should be a sequence of length 3 (input_1, input_2,'
-          ' state) or 5 (input_1, input_2,'
-          ' state, label, label_mask), found %s' % len(inputs))
-    input_1, input_2, state = inputs[:3]
-    if len(inputs) == 5:
-      label, label_mask = inputs[3:]
+          'Inputs should be a sequence of length 5 (encoder_input_1, '
+          'encoderinput_2, decoder_input_1, decoder_input_2, state) or 7 '
+          '(encoder_input_1, encoderinput_2, decoder_input_1, decoder_input_2, '
+          'state, label, label_mask), found %s' % len(inputs))
+    (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+     state) = inputs[:5]
+    if len(inputs) == 7:
+      label, label_mask = inputs[5:]
     else:
       label = None
       label_mask = None
-    return (input_1, input_2, state, label, label_mask)
+    return (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+            state, label, label_mask)
 
   def _may_extract_from_tuple_state(self, state):
     if isinstance(state, (list, tuple)):
@@ -399,13 +395,14 @@ class _VAECell(tf.keras.layers.Layer):
            inputs: Sequence[Any],
            return_states: Optional[bool] = False,
            return_samples: Optional[bool] = False):
-    (input_1, input_2, state, label,
-     label_mask) = self._verify_and_prepare_inputs(inputs)
+    (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2, state,
+     label, label_mask) = self._verify_and_prepare_inputs(inputs)
 
     initial_state = self._may_extract_from_tuple_state(state)
 
     encoder_initial_state = self._prepare_encoder_initial_state([initial_state])
-    encoder_outputs_1, encoder_outputs_2 = self.encoder(input_1, input_2,
+    encoder_outputs_1, encoder_outputs_2 = self.encoder(encoder_input_1,
+                                                        encoder_input_2,
                                                         encoder_initial_state)
 
     latent_state, sampler_inputs = self._project_encoder_outputs(
@@ -417,9 +414,11 @@ class _VAECell(tf.keras.layers.Layer):
 
     decoder_initial_state = self._prepare_decoder_initial_state(
         [initial_state, samples_processed])
-    input_1, input_2 = self._prepare_decoder_inputs([input_1, input_2])
+    decoder_input_1, decoder_input_2 = self._prepare_decoder_inputs(
+        [decoder_input_1, decoder_input_2])
     (decoder_outputs_1, decoder_outputs_2, decoder_state_1,
-     decoder_state_2) = self.decoder(input_1, input_2, decoder_initial_state)
+     decoder_state_2) = self.decoder(decoder_input_1, decoder_input_2,
+                                     decoder_initial_state)
     decoder_state_1 = self._post_process_decoder_state(decoder_state_1)
     decoder_state_2 = self._post_process_decoder_state(decoder_state_2)
     decoder_initial_state = self._post_process_decoder_state(
@@ -494,56 +493,55 @@ class VanillaLinearVAECell(_VAECell):
   def __init__(self, config: model_config.VanillaLinearVAECellConfig):
     self._gumbel_softmax_label_adjustment_multiplier = config.gumbel_softmax_label_adjustment_multiplier
 
-    vocab_embeddings_initializer = None
-    if config.shared_bert_embedding:
-      shared_embedding_layer = _BERT(
-          config.max_seq_length,
-          bert_config=configs.BertConfig(**config.shared_bert_embedding_config),
-          trainable=config.trainable_embedding)
+    # If word_embedding_path is specified, use the embedding size of the
+    # pre-trained embeddings.
+    if config.word_embedding_path:
+      with tf.io.gfile.GFile(config.word_embedding_path,
+                             'rb') as embedding_file:
+        word_embedding = np.load(embedding_file)
+      embedding_vocab_size, embed_size = word_embedding.shape
+      if config.vocab_size != embedding_vocab_size:
+        raise ValueError(
+            'Expected consistent vocab size between vocab.txt and the '
+            'embedding, found {} and {}.'.format(embedding_vocab_size,
+                                                 config.vocab_size))
+      config.embed_size = embed_size
+      vocab_embeddings_initializer = (
+          tf.keras.initializers.Constant(word_embedding))
     else:
-      # If word_embedding_path is specified, use the embedding size of the
-      # pre-trained embeddings.
-      if config.word_embedding_path:
-        with tf.io.gfile.GFile(config.word_embedding_path,
-                               'rb') as embedding_file:
-          word_embedding = np.load(embedding_file)
-        embedding_vocab_size, embed_size = word_embedding.shape
-        if config.vocab_size != embedding_vocab_size:
-          raise ValueError(
-              'Expected consistent vocab size between vocab.txt and the '
-              'embedding, found {} and {}.'.format(embedding_vocab_size,
-                                                   config.vocab_size))
-        config.embed_size = embed_size
-        vocab_embeddings_initializer = (
-            tf.keras.initializers.Constant(word_embedding))
-      if config.shared_embedding:
-        shared_embedding_layer = _Embedding(
-            INPUT_ID_NAME,
-            config.vocab_size,
-            config.embed_size,
-            embeddings_initializer=vocab_embeddings_initializer,
-            input_length=config.max_seq_length,
-            trainable=config.trainable_embedding)
-      else:
-        shared_embedding_layer = None
+      vocab_embeddings_initializer = None
+
+    encoder_embedding_layer = _build_embedding_layer(
+        config.encoder_embedding_type,
+        config,
+        embeddings_initializer=vocab_embeddings_initializer)
+
+    if config.shared_embedding:
+      if config.encoder_embedding_type != config.decoder_embedding_type:
+        raise ValueError(
+            'Expected consistent embedding type for encoder and decoder when '
+            'shared_embedding is True, found {} and {}'.format(
+                config.encoder_embedding_type, config.decoder_embedding_type))
+      decoder_embeddling_layer = encoder_embedding_layer
+      self.shared_embedding_layer = encoder_embedding_layer
+    else:
+      decoder_embeddling_layer = _build_embedding_layer(
+          config.decoder_embedding_type,
+          config,
+          embeddings_initializer=vocab_embeddings_initializer)
+      self.shared_embedding_layer = None
 
     encoder = DualRNNEncoder(
         vocab_size=config.vocab_size,
-        embed_size=config.embed_size,
-        max_seq_length=config.max_seq_length,
         hidden_size=config.encoder_hidden_size,
+        embedding_layer=encoder_embedding_layer,
         num_layers=config.num_ecnoder_rnn_layers,
         dropout=config.dropout,
-        cell_type=config.encoder_cell_type,
-        embeddings_initializer=vocab_embeddings_initializer,
-        shared_embedding_layer=shared_embedding_layer,
-        trainable_embedding=config.trainable_embedding)
+        cell_type=config.encoder_cell_type)
     sampler = utils.GumbelSoftmaxSampler(config.temperature, hard=False)
 
     decoder = DualRNNDecoder(
         vocab_size=config.vocab_size,
-        embed_size=config.embed_size,
-        max_seq_length=config.max_seq_length - 1,
         hidden_size=config.decoder_hidden_size,
         # Hardcoded to be 1 layer to align with pytorch version. Otherwise, we
         # need to define the initial state for each layer in
@@ -551,9 +549,7 @@ class VanillaLinearVAECell(_VAECell):
         num_layers=1,
         dropout=config.dropout,
         cell_type=config.decoder_cell_type,
-        embeddings_initializer=vocab_embeddings_initializer,
-        shared_embedding_layer=shared_embedding_layer,
-        trainable_embedding=config.trainable_embedding,
+        embedding_layer=decoder_embeddling_layer,
         return_state=True)
     state_updater = _VanillaStateUpdater(config.state_updater_cell_type,
                                          config.num_states, config.dropout)
@@ -564,7 +560,6 @@ class VanillaLinearVAECell(_VAECell):
         dropout=config.dropout)
     self.sample_post_processor = utils.MLP(
         config.sampler_post_processor_output_sizes, dropout=config.dropout)
-    self.shared_embedding_layer = shared_embedding_layer
 
     super(VanillaLinearVAECell, self).__init__(
         encoder=encoder,

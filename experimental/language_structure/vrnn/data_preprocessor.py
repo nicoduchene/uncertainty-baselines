@@ -52,9 +52,20 @@ class _DataPreprocessor:
     """Creates utterance features for the model."""
     raise NotImplementedError('_create_utterance_features is not implemented!')
 
+  def create_encoder_inputs(
+      self, inputs: tf.Tensor) -> Sequence[_UtteranceFeatureType]:
+    """Creates utterance features for the model."""
+    return self._create_utterance_features(inputs)
+
+  def create_decoder_inputs(
+      self, inputs: tf.Tensor) -> Sequence[_UtteranceFeatureType]:
+    """Creates utterance features for the model."""
+    return self._create_utterance_features(inputs)
+
   def create_feature_and_label(self, inputs: tf.Tensor):
     """Creates the features and labels for training and evaluating."""
-    input_1, input_2 = self._create_utterance_features(inputs)
+    encoder_input_1, encoder_input_2 = self.create_encoder_inputs(inputs)
+    decoder_input_1, decoder_input_2 = self.create_decoder_inputs(inputs)
 
     label_id = inputs[STATE_LABEL_NAME]
     if self._labeled_dialog_turn_ids is None or DIAL_TURN_ID_NAME not in inputs:
@@ -68,8 +79,9 @@ class _DataPreprocessor:
     initial_sample = tf.ones_like(
         tf.tile(label_id[:, :1], [1, self._num_states]), dtype=tf.float32)
 
-    return (input_1, input_2, label_id, label_mask, initial_state,
-            initial_sample, inputs[DOMAIN_LABEL_NAME])
+    return (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+            label_id, label_mask, initial_state, initial_sample,
+            inputs[DOMAIN_LABEL_NAME])
 
 
 class DataPreprocessor(_DataPreprocessor):
@@ -121,8 +133,30 @@ class BertDataPreprocessor(_DataPreprocessor):
     return features
 
 
+class CompositeDataPreprocessor(_DataPreprocessor):
+  """Create encoder/decoder inputs by different sub-data-preprocessor."""
+
+  def __init__(self, encoder_input_processor: _DataPreprocessor,
+               decoder_input_processor: _DataPreprocessor, num_states: int,
+               **kwargs):
+    super(CompositeDataPreprocessor, self).__init__(num_states, **kwargs)
+    self.encoder_input_processor = encoder_input_processor
+    self.decoder_input_processor = decoder_input_processor
+
+  def create_encoder_inputs(
+      self, inputs: tf.Tensor) -> Sequence[_UtteranceFeatureType]:
+    """Creates utterance features for the model."""
+    return self.encoder_input_processor.create_encoder_inputs(inputs)
+
+  def create_decoder_inputs(
+      self, inputs: tf.Tensor) -> Sequence[_UtteranceFeatureType]:
+    """Creates utterance features for the model."""
+    return self.decoder_input_processor.create_decoder_inputs(inputs)
+
+
 # Used for type hinting.
-DataPreprocessorType = Union[DataPreprocessor, BertDataPreprocessor]
+DataPreprocessorType = Union[DataPreprocessor, BertDataPreprocessor,
+                             CompositeDataPreprocessor]
 
 
 def get_full_dataset_outputs(dataset_builder: base.BaseDataset) -> tf.Tensor:

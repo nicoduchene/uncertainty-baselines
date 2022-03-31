@@ -526,10 +526,9 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
                                                 config.psl, vocab)
 
   # Load datasets
-  # TODO(yquan): invesigate why distributed training fails when using BERT
+  # TODO(yquan): invesigate why distributed training fails in *fish TPU
   # Failure example: https://xm2a.corp.google.com/experiments/33275459
-  distributed_training = (not psl_learning and not psl_inference and
-                          not config.shared_bert_embedding)
+  distributed_training = False
   train_dataset = preprocessor.create_dataset(train_dataset_builder,
                                               config.train_batch_size,
                                               preprocess_fn, strategy,
@@ -545,7 +544,7 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
         dataset_builder, config.eval_batch_size, preprocess_fn, strategy,
         distributed_training)
 
-  distributed_inference = not config.shared_bert_embedding
+  distributed_inference = False
   inference_train_dataset = preprocessor.create_dataset(
       inference_train_dataset_builder, config.inference_batch_size,
       preprocess_fn, strategy, distributed_inference)
@@ -631,8 +630,8 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
     def _train_step(inputs: Sequence[tf.Tensor]):
       """Training step function."""
 
-      (input_1, input_2, label_id, label_mask, initial_state, initial_sample,
-       _) = inputs[:7]
+      (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+       label_id, label_mask, initial_state, initial_sample, _) = inputs[:9]
       if psl_learning:
         psl_inputs = inputs[-1]
         # Explicitly specify the batch size as PSL model now requires known
@@ -642,7 +641,10 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
       else:
         psl_inputs = None
 
-      model_inputs = [input_1, input_2, initial_state, initial_sample]
+      model_inputs = [
+          encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+          initial_state, initial_sample
+      ]
       if with_label:
         model_inputs.extend([label_id, label_mask])
 
@@ -651,10 +653,10 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
         model_outputs = model(model_inputs, training=True)
 
         losses = linear_vrnn.compute_loss(
-            input_1[_INPUT_ID_NAME],
-            input_2[_INPUT_ID_NAME],
-            input_1[_INPUT_MASK_NAME],
-            input_2[_INPUT_MASK_NAME],
+            decoder_input_1[_INPUT_ID_NAME][:, :, 1:],
+            decoder_input_2[_INPUT_ID_NAME][:, :, 1:],
+            decoder_input_1[_INPUT_MASK_NAME][:, :, 1:],
+            decoder_input_2[_INPUT_MASK_NAME][:, :, 1:],
             model_outputs,
             latent_label_id=label_id,
             latent_label_mask=label_mask,
@@ -684,8 +686,8 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
     def _test_step(inputs: Sequence[tf.Tensor]):
       """Evaluation step function."""
 
-      (input_1, input_2, label_id, label_mask, initial_state, initial_sample,
-       _) = inputs[:7]
+      (encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+       label_id, label_mask, initial_state, initial_sample, _) = inputs[:7]
       if psl_inference:
         psl_inputs = inputs[-1]
         # Explicitly specify the batch size as PSL model now requires known
@@ -696,14 +698,17 @@ def run_experiment(config: config_dict.ConfigDict, output_dir: str):
         psl_inputs = None
 
       # In evaluation, don't provide label as a guidance.
-      model_inputs = [input_1, input_2, initial_state, initial_sample]
+      model_inputs = [
+          encoder_input_1, encoder_input_2, decoder_input_1, decoder_input_2,
+          initial_state, initial_sample
+      ]
       model_outputs = model(model_inputs, training=False)
 
       losses = linear_vrnn.compute_loss(
-          input_1[_INPUT_ID_NAME],
-          input_2[_INPUT_ID_NAME],
-          input_1[_INPUT_MASK_NAME],
-          input_2[_INPUT_MASK_NAME],
+          decoder_input_1[_INPUT_ID_NAME][:, :, 1:],
+          decoder_input_2[_INPUT_ID_NAME][:, :, 1:],
+          decoder_input_1[_INPUT_MASK_NAME][:, :, 1:],
+          decoder_input_2[_INPUT_MASK_NAME][:, :, 1:],
           model_outputs,
           latent_label_id=label_id,
           latent_label_mask=label_mask,

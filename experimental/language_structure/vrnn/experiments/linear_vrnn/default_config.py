@@ -42,7 +42,9 @@ def _create_model_config(
     dataset: str,
     num_states: int,
     with_bow: bool,
-    shared_bert_embedding: bool,
+    encoder_embedding_type: str,
+    decoder_embedding_type: str,
+    shared_embedding: bool,
     bert_dir: Optional[str] = '',
     word_embedding_path: Optional[str] = ''
 ) -> model_config.VanillaLinearVRNNConfig:
@@ -51,16 +53,14 @@ def _create_model_config(
       vae_cell=dict(
           max_seq_length=data_utils.get_dataset_max_seq_length(dataset),
           num_states=num_states,
-          shared_bert_embedding=shared_bert_embedding,
+          encoder_embedding_type=encoder_embedding_type,
+          decoder_embedding_type=decoder_embedding_type,
+          shared_embedding=shared_embedding,
           word_embedding_path=word_embedding_path,
-      ),
+          bert_embedding_ckpt_dir=os.path.join(bert_dir, 'bert_model.ckpt')),
       with_bow=with_bow,
       max_dialog_length=data_utils.get_dataset_max_dialog_length(dataset),
   )
-
-  if shared_bert_embedding:
-    data['vae_cell']['shared_bert_embedding_ckpt_dir'] = os.path.join(
-        bert_dir, 'bert_model.ckpt')
 
   return model_config.vanilla_linear_vrnn_config(**data)
 
@@ -69,7 +69,9 @@ def get_config(dataset: str,
                num_states: Optional[int] = None,
                shots: Optional[int] = 0,
                with_bow: Optional[bool] = True,
-               shared_bert_embedding: Optional[bool] = False,
+               encoder_embedding_type: Optional[str] = model_config.GLOVE_EMBED,
+               decoder_embedding_type: Optional[str] = model_config.GLOVE_EMBED,
+               shared_embedding: Optional[bool] = False,
                bert_embedding_type: Optional[str] = 'base',
                bert_dir: Optional[str] = '') -> config_dict.ConfigDict:
   """Returns the configuration for this experiment.
@@ -79,7 +81,9 @@ def get_config(dataset: str,
     num_states: number of the latent dialog states of the model.
     shots: number of labeled examples per class used during training.
     with_bow: whether to enable BoW loss.
-    shared_bert_embedding: whether to use BERT as the shared embedding layer.
+    encoder_embedding_type: the embedding type of the encoder.
+    decoder_embedding_type: the embedding type of the decoder.
+    shared_embedding: whether to share embedding layers between encoder/decoder.
     bert_embedding_type:  the type of Bert model for the embedding layer.
       See http://shortn/_PzBKxLRgDl for details.
     bert_dir: the directory contains pretrained BERT TF checkpoints.
@@ -149,7 +153,7 @@ def get_config(dataset: str,
       config_dir, f'label_ratio_{shots}_shots.json'
       if shots == 0 else f'label_ratio_{shots}_shots_per_cls.json')
 
-  config.shared_bert_embedding = shared_bert_embedding
+  config.shared_embedding = shared_embedding
 
 
   # The TF Hub url for preprocessing inputs for the embedding Bert.
@@ -166,7 +170,9 @@ def get_config(dataset: str,
   if not num_states:
     num_states = data_utils.get_dataset_num_latent_states(dataset)
   config.model = _create_model_config(dataset, num_states, config.with_bow,
-                                      config.shared_bert_embedding, bert_dir,
+                                      encoder_embedding_type,
+                                      decoder_embedding_type,
+                                      config.shared_embedding, bert_dir,
                                       word_embedding_path)
 
   # Weight of the word weights from word_weights_path used to interpolate with

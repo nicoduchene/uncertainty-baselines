@@ -20,6 +20,9 @@ from ml_collections import config_dict
 VanillaLinearVAECellConfig = config_dict.ConfigDict
 VanillaLinearVRNNConfig = config_dict.ConfigDict
 
+GLOVE_EMBED = 'GloVe'
+BERT_EMBED = 'BERT'
+
 
 def vanilla_linear_vae_cell_config(**kwargs) -> VanillaLinearVAECellConfig:
   """Creates model config for VanillaLinearVAECell."""
@@ -32,13 +35,16 @@ def vanilla_linear_vae_cell_config(**kwargs) -> VanillaLinearVAECellConfig:
   config.vocab_size = kwargs.get('vocab_size', 500)
   config.embed_size = kwargs.get('embed_size', 300)
   config.trainable_embedding = kwargs.get('trainable_embedding', True)
-  config.shared_embedding = kwargs.get('shared_embedding', True)
   config.word_embedding_path = kwargs.get('word_embedding_path')
-  config.shared_bert_embedding = kwargs.get('shared_bert_embedding', False)
-  config.shared_bert_embedding_ckpt_dir = kwargs.get(
-      'shared_bert_embedding_ckpt_dir', '')
-  config.shared_bert_embedding_config = kwargs.get(
-      'shared_bert_embedding_config', {})
+  config.bert_embedding = kwargs.get('bert_embedding', False)
+  config.bert_embedding = kwargs.get('bert_embedding', '')
+  config.bert_embedding_config = kwargs.get('bert_embedding_config', {})
+
+  config.encoder_embedding_type = kwargs.get('encoder_embedding_type',
+                                             GLOVE_EMBED)
+  config.decoder_embedding_type = kwargs.get('decoder_embedding_type',
+                                             GLOVE_EMBED)
+  config.shared_embedding = kwargs.get('shared_embedding', True)
 
   config.encoder_hidden_size = kwargs.get('encoder_hidden_size', 400)
   config.encoder_cell_type = kwargs.get('encoder_cell_type', 'lstm')
